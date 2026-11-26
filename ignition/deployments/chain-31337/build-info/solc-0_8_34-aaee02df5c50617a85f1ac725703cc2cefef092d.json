@@ -1,0 +1,49 @@
+{
+  "_format": "hh3-sol-build-info-1",
+  "id": "solc-0_8_34-aaee02df5c50617a85f1ac725703cc2cefef092d",
+  "solcVersion": "0.8.34",
+  "solcLongVersion": "0.8.34+commit.80d5c536",
+  "compilerType": "solc",
+  "toolVersions": {
+    "hardhat": "3.22.0"
+  },
+  "userSourceNameMap": {
+    "contracts/ClassroomPoll.sol": "project/contracts/ClassroomPoll.sol"
+  },
+  "input": {
+    "language": "Solidity",
+    "settings": {
+      "evmVersion": "paris",
+      "optimizer": {
+        "enabled": true,
+        "runs": 200
+      },
+      "outputSelection": {
+        "*": {
+          "": [
+            "ast"
+          ],
+          "*": [
+            "abi",
+            "evm.bytecode.linkReferences",
+            "evm.bytecode.object",
+            "evm.bytecode.opcodes",
+            "evm.bytecode.sourceMap",
+            "evm.deployedBytecode.immutableReferences",
+            "evm.deployedBytecode.linkReferences",
+            "evm.deployedBytecode.object",
+            "evm.deployedBytecode.opcodes",
+            "evm.deployedBytecode.sourceMap",
+            "evm.methodIdentifiers"
+          ]
+        }
+      },
+      "remappings": []
+    },
+    "sources": {
+      "project/contracts/ClassroomPoll.sol": {
+        "content": "// SPDX-License-Identifier: MIT\r\npragma solidity ^0.8.34;\r\n\r\ncontract ClassroomPoll {\r\n    struct Poll {\r\n        string question;\r\n        string[] options;\r\n        uint256[] voteCounts;\r\n        uint256 deadline;\r\n        address creator;\r\n        bool closed;\r\n    }\r\n\r\n    uint256 public nextPollId;\r\n    mapping(uint256 => Poll) private polls;\r\n    mapping(uint256 => mapping(address => bool)) public hasVoted;\r\n\r\n    event PollCreated(uint256 indexed pollId, address indexed creator, string question, uint256 deadline);\r\n    event VoteCast(uint256 indexed pollId, address indexed voter, uint256 optionIndex);\r\n    event PollClosed(uint256 indexed pollId);\r\n\r\n    function createPoll(\r\n        string calldata question,\r\n        string[] calldata options,\r\n        uint256 durationInSeconds\r\n    ) external returns (uint256 pollId) {\r\n        require(bytes(question).length > 0, \"Question is required\");\r\n        require(options.length >= 2 && options.length <= 8, \"Use 2 to 8 options\");\r\n        require(durationInSeconds > 0 && durationInSeconds <= 30 days, \"Invalid duration\");\r\n\r\n        pollId = nextPollId++;\r\n        Poll storage poll = polls[pollId];\r\n        poll.question = question;\r\n        poll.deadline = block.timestamp + durationInSeconds;\r\n        poll.creator = msg.sender;\r\n\r\n        for (uint256 i = 0; i < options.length; i++) {\r\n            require(bytes(options[i]).length > 0, \"Option is required\");\r\n            poll.options.push(options[i]);\r\n            poll.voteCounts.push(0);\r\n        }\r\n\r\n        emit PollCreated(pollId, msg.sender, question, poll.deadline);\r\n    }\r\n\r\n    function vote(uint256 pollId, uint256 optionIndex) external {\r\n        Poll storage poll = polls[pollId];\r\n        require(bytes(poll.question).length > 0, \"Poll does not exist\");\r\n        require(!poll.closed && block.timestamp < poll.deadline, \"Poll is closed\");\r\n        require(optionIndex < poll.options.length, \"Invalid option\");\r\n        require(!hasVoted[pollId][msg.sender], \"Already voted\");\r\n\r\n        hasVoted[pollId][msg.sender] = true;\r\n        poll.voteCounts[optionIndex]++;\r\n        emit VoteCast(pollId, msg.sender, optionIndex);\r\n    }\r\n\r\n    function closePoll(uint256 pollId) external {\r\n        Poll storage poll = polls[pollId];\r\n        require(bytes(poll.question).length > 0, \"Poll does not exist\");\r\n        require(msg.sender == poll.creator, \"Only the creator can close\");\r\n        require(!poll.closed, \"Poll is already closed\");\r\n        poll.closed = true;\r\n        emit PollClosed(pollId);\r\n    }\r\n\r\n    function getPoll(uint256 pollId)\r\n        external\r\n        view\r\n        returns (\r\n            string memory question,\r\n            string[] memory options,\r\n            uint256[] memory voteCounts,\r\n            uint256 deadline,\r\n            address creator,\r\n            bool closed\r\n        )\r\n    {\r\n        Poll storage poll = polls[pollId];\r\n        require(bytes(poll.question).length > 0, \"Poll does not exist\");\r\n        return (poll.question, poll.options, poll.voteCounts, poll.deadline, poll.creator, poll.closed);\r\n    }\r\n\r\n    function isOpen(uint256 pollId) public view returns (bool) {\r\n        Poll storage poll = polls[pollId];\r\n        return bytes(poll.question).length > 0 && !poll.closed && block.timestamp < poll.deadline;\r\n    }\r\n}\r\n"
+      }
+    }
+  }
+}

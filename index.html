@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Classroom Polls</title>
+  <style>
+    :root { font-family: Arial, sans-serif; color: #17212b; background: #f3f6f9; }
+    body { margin: 0; }
+    main { max-width: 860px; margin: 32px auto; padding: 0 16px; }
+    h1 { margin-bottom: 4px; }
+    .subtitle { color: #5b6875; margin-top: 0; }
+    section, article { background: white; border: 1px solid #d5dde5; border-radius: 10px; padding: 18px; margin: 16px 0; }
+    h2 { font-size: 16px; margin-top: 0; }
+    label { display: block; color: #5b6875; font-size: 13px; margin: 10px 0 4px; }
+    input { box-sizing: border-box; width: 100%; padding: 10px; border: 1px solid #aeb9c4; border-radius: 6px; font-size: 15px; }
+    button { border: 0; border-radius: 6px; padding: 10px 14px; margin: 10px 6px 0 0; background: #1769aa; color: white; cursor: pointer; }
+    button.secondary { background: #536273; }
+    button:disabled { background: #aeb9c4; cursor: not-allowed; }
+    .option { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+    .option button { flex: 1; text-align: left; margin: 0; background: #edf4fb; color: #17212b; }
+    .option button:hover { background: #dcecf9; }
+    .meta { color: #5b6875; font-size: 13px; }
+    .bar { background: #e6edf3; border-radius: 4px; height: 8px; margin-top: 4px; }
+    .bar span { display: block; background: #1769aa; border-radius: 4px; height: 100%; }
+    #status { min-height: 22px; margin: 12px 0; }
+    .error { color: #b3261e; }
+    .success { color: #176b3a; }
+    .warning { background: #fff4d6; border-color: #e0b449; }
+    .hidden { display: none; }
+    code { word-break: break-all; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Classroom Polls</h1>
+  <p class="subtitle">Create a poll, let each wallet vote once, and see the result on-chain.</p>
+
+  <section>
+    <h2>Connect</h2>
+    <label for="address">ClassroomPoll contract address</label>
+    <input id="address" placeholder="0x...">
+    <div id="account" class="meta">Wallet not connected</div>
+    <div id="network" class="meta">Network: not connected</div>
+    <button id="connect">Connect MetaMask</button>
+    <button id="switchNetwork" class="secondary">Switch to Sepolia</button>
+    <button id="refresh" class="secondary">Refresh polls</button>
+  </section>
+
+  <section>
+    <h2>Create a poll</h2>
+    <label for="question">Question</label>
+    <input id="question" maxlength="160" placeholder="Which blockchain topic should we practise?">
+    <label>Options (at least two)</label>
+    <div id="optionInputs">
+      <input class="poll-option" maxlength="80" placeholder="Option 1">
+      <input class="poll-option" maxlength="80" placeholder="Option 2">
+    </div>
+    <button id="addOption" class="secondary">Add option</button>
+    <label for="duration">Duration in hours</label>
+    <input id="duration" type="number" min="1" max="720" value="24">
+    <button id="create" disabled>Create poll</button>
+  </section>
+
+  <div id="status"></div>
+  <section>
+    <h2>Polls</h2>
+    <div id="polls"><p class="meta">Connect a wallet or enter an address, then refresh.</p></div>
+  </section>
+</main>
+<script src="ethers.umd.min.js"></script>
+<script>
+  const ABI = [
+    "function nextPollId() view returns (uint256)",
+    "function getPoll(uint256) view returns (string question, string[] options, uint256[] voteCounts, uint256 deadline, address creator, bool closed)",
+    "function hasVoted(uint256,address) view returns (bool)",
+    "function createPoll(string question,string[] options,uint256 durationInSeconds) returns (uint256)",
+    "function vote(uint256 pollId,uint256 optionIndex)",
+    "function closePoll(uint256 pollId)"
+  ];
+  const $ = (id) => document.getElementById(id);
+  const SEPOLIA_CHAIN_ID = 11155111n;
+  const state = { provider: null, signer: null, contract: null, account: null, chainId: null };
+
+  function status(message, error = false) {
+    $("status").textContent = message;
+    $("status").className = error ? "error" : "success";
+  }
+  function readableError(error) {
+    return error.shortMessage || error.reason || error.message || "Unknown error";
+  }
+  function getAddress() {
+    const address = $("address").value.trim();
+    if (!ethers.isAddress(address)) throw new Error("Enter a valid deployed contract address.");
+    return address;
+  }
+  async function requireSepolia() {
+    if (!window.ethereum) throw new Error("MetaMask was not found.");
+    state.provider ??= new ethers.BrowserProvider(window.ethereum);
+    const network = await state.provider.getNetwork();
+    state.chainId = network.chainId;
+    $("network").textContent = network.chainId === SEPOLIA_CHAIN_ID
+      ? "Network: Sepolia (fees paid in SepoliaETH)"
+      : "Network: unsupported (chain ID " + network.chainId + "); switch to Sepolia";
+    $("create").disabled = !(state.signer && state.contract && state.chainId === SEPOLIA_CHAIN_ID);
+    if (network.chainId !== SEPOLIA_CHAIN_ID) {
+      throw new Error("This app uses Sepolia. Switch MetaMask to Sepolia; SepoliaETH cannot pay fees on Ethereum mainnet.");
+    }
+  }
+  async function getContract() {
+    await requireSepolia();
+    const address = getAddress();
+    const code = await state.provider.getCode(address);
+    if (code === "0x") {
+      throw new Error("No contract is deployed at this address on Sepolia. Deploy ClassroomPoll to Sepolia and use its new address.");
+    }
+    return new ethers.Contract(address, ABI, state.signer || state.provider);
+  }
+  async function connect() {
+    try {
+      if (!window.ethereum) throw new Error("Install MetaMask to connect a wallet.");
+      state.provider ??= new ethers.BrowserProvider(window.ethereum);
+      await state.provider.send("eth_requestAccounts", []);
+      state.signer = await state.provider.getSigner();
+      state.account = await state.signer.getAddress();
+      $("account").textContent = "Connected: " + state.account;
+      await requireSepolia();
+      state.contract = await getContract();
+      $("create").disabled = false;
+      status("Wallet connected to Sepolia.");
+      await loadPolls();
+    } catch (error) { status(readableError(error), true); }
+  }
+  async function loadPolls() {
+    try {
+      const contract = await getContract();
+      const count = Number(await contract.nextPollId());
+      const polls = $("polls");
+      polls.replaceChildren();
+      if (count === 0) { polls.innerHTML = "<p class='meta'>No polls have been created yet.</p>"; return; }
+      for (let id = 0; id < count; id++) await renderPoll(contract, id, polls);
+    } catch (error) { status("Could not load polls: " + readableError(error), true); }
+  }
+  async function renderPoll(contract, id, container) {
+    const [question, options, counts, deadline, creator, closed] = await contract.getPoll(id);
+    const card = document.createElement("article");
+    const total = counts.reduce((sum, value) => sum + Number(value), 0);
+    const expired = Date.now() >= Number(deadline) * 1000;
+    card.innerHTML = "<h3></h3><div class='meta'></div><div class='choices'></div>";
+    card.querySelector("h3").textContent = "#" + id + " " + question;
+    card.querySelector(".meta").textContent = (closed || expired ? "Closed" : "Open") +
+      " · creator " + creator.slice(0, 10) + "... · " + new Date(Number(deadline) * 1000).toLocaleString();
+    const choices = card.querySelector(".choices");
+    options.forEach((option, index) => {
+      const wrapper = document.createElement("div");
+      const button = document.createElement("button");
+      button.textContent = option + " (" + counts[index].toString() + " votes)";
+      button.disabled = closed || expired || !state.signer;
+      button.onclick = () => castVote(id, index);
+      wrapper.className = "option";
+      wrapper.appendChild(button);
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      bar.innerHTML = "<span style='width:" + (total ? Number(counts[index]) / total * 100 : 0) + "%'></span>";
+      wrapper.appendChild(bar);
+      choices.appendChild(wrapper);
+    });
+    if (state.account && creator.toLowerCase() === state.account.toLowerCase() && !closed) {
+      const close = document.createElement("button");
+      close.className = "secondary";
+      close.textContent = "Close poll";
+      close.onclick = () => closePoll(id);
+      card.appendChild(close);
+    }
+    container.appendChild(card);
+  }
+  async function castVote(id, option) {
+    try {
+      const contract = await getContract();
+      if (!state.signer) throw new Error("Connect your wallet before voting.");
+      status("Confirm the vote in MetaMask...");
+      const tx = await contract.vote(id, option);
+      status("Vote sent. Waiting for confirmation...");
+      await tx.wait();
+      status("Vote recorded.");
+      await loadPolls();
+    } catch (error) { status("Vote failed: " + readableError(error), true); }
+  }
+  async function closePoll(id) {
+    try {
+      const contract = await getContract();
+      if (!state.signer) throw new Error("Connect your wallet before closing a poll.");
+      const tx = await contract.closePoll(id);
+      status("Closing poll...");
+      await tx.wait();
+      await loadPolls();
+    } catch (error) { status("Closing failed: " + readableError(error), true); }
+  }
+  async function createPoll() {
+    try {
+      const contract = await getContract();
+      if (!state.signer) throw new Error("Connect your wallet before creating a poll.");
+      const question = $("question").value.trim();
+      const options = [...document.querySelectorAll(".poll-option")].map((input) => input.value.trim()).filter(Boolean);
+      const hours = Number($("duration").value);
+      if (!question || options.length < 2 || !hours || hours > 720) throw new Error("Enter a question, two options, and a duration up to 720 hours.");
+      status("Confirm the poll transaction in MetaMask...");
+      const tx = await contract.createPoll(question, options, Math.round(hours * 3600));
+      await tx.wait();
+      status("Poll created.");
+      $("question").value = "";
+      await loadPolls();
+    } catch (error) { status("Creation failed: " + readableError(error), true); }
+  }
+  $("connect").onclick = connect;
+  $("switchNetwork").onclick = async () => {
+    try {
+      if (!window.ethereum) throw new Error("Install MetaMask to select Sepolia.");
+      await window.ethereum.request({
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId: "0xaa36a7" }]
+      });
+      location.reload();
+    } catch (error) {
+      if (error.code === 4902) {
+        status("Add the Sepolia test network in MetaMask first, then click Switch to Sepolia again.", true);
+      } else {
+        status("Could not switch network: " + readableError(error), true);
+      }
+    }
+  };
+  $("refresh").onclick = loadPolls;
+  $("create").onclick = createPoll;
+  $("addOption").onclick = () => {
+    if (document.querySelectorAll(".poll-option").length >= 8) return status("A poll can have at most 8 options.", true);
+    const input = document.createElement("input");
+    input.className = "poll-option";
+    input.maxLength = 80;
+    input.placeholder = "Another option";
+    $("optionInputs").appendChild(input);
+  };
+  if (window.ethereum) {
+    window.ethereum.on?.("accountsChanged", () => location.reload());
+    window.ethereum.on?.("chainChanged", () => location.reload());
+  }
+  if (window.ethereum) {
+    state.provider = new ethers.BrowserProvider(window.ethereum);
+    requireSepolia().catch((error) => status(readableError(error), true));
+  }
+</script>
+</body>
+</html>
