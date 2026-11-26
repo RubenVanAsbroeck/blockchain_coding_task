@@ -38,8 +38,8 @@
 
   <section>
     <h2>Connect</h2>
-    <label for="address">ClassroomPoll contract address</label>
-    <input id="address" placeholder="0x...">
+    <label for="address">ClassroomPoll contract address (optional override)</label>
+    <input id="address" value="0x9f032D3ADBF46B8a2cF572698F7D0e72DFa6cDfd" placeholder="0x...">
     <div id="account" class="meta">Wallet not connected</div>
     <div id="network" class="meta">Network: not connected</div>
     <button id="connect">Connect MetaMask</button>
@@ -65,7 +65,7 @@
   <div id="status"></div>
   <section>
     <h2>Polls</h2>
-    <div id="polls"><p class="meta">Connect a wallet or enter an address, then refresh.</p></div>
+    <div id="polls"><p class="meta">Loading polls...</p></div>
   </section>
 </main>
 <script src="ethers.umd.min.js"></script>
@@ -80,7 +80,15 @@
   ];
   const $ = (id) => document.getElementById(id);
   const SEPOLIA_CHAIN_ID = 11155111n;
-  const state = { provider: null, signer: null, contract: null, account: null, chainId: null };
+  const SEPOLIA_RPC_URL = "https://ethereum-sepolia-rpc.publicnode.com";
+  const state = {
+    readProvider: new ethers.JsonRpcProvider(SEPOLIA_RPC_URL),
+    provider: null,
+    signer: null,
+    contract: null,
+    account: null,
+    chainId: null
+  };
 
   function status(message, error = false) {
     $("status").textContent = message;
@@ -107,33 +115,45 @@
       throw new Error("This app uses Sepolia. Switch MetaMask to Sepolia; SepoliaETH cannot pay fees on Ethereum mainnet.");
     }
   }
-  async function getContract() {
-    await requireSepolia();
+  async function getReadContract() {
     const address = getAddress();
-    const code = await state.provider.getCode(address);
+    const code = await state.readProvider.getCode(address);
     if (code === "0x") {
       throw new Error("No contract is deployed at this address on Sepolia. Deploy ClassroomPoll to Sepolia and use its new address.");
     }
-    return new ethers.Contract(address, ABI, state.signer || state.provider);
+    return new ethers.Contract(address, ABI, state.readProvider);
+  }
+  async function getContract() {
+    await requireSepolia();
+    if (!state.signer) throw new Error("Connect your wallet before sending a transaction.");
+    const address = getAddress();
+    const code = await state.readProvider.getCode(address);
+    if (code === "0x") {
+      throw new Error("No contract is deployed at this address on Sepolia. Deploy ClassroomPoll to Sepolia and use its new address.");
+    }
+    return new ethers.Contract(address, ABI, state.signer);
+  }
+  async function connectWallet() {
+    if (!window.ethereum) throw new Error("Install MetaMask to connect a wallet.");
+    state.provider ??= new ethers.BrowserProvider(window.ethereum);
+    await state.provider.send("eth_requestAccounts", []);
+    state.signer = await state.provider.getSigner();
+    state.account = await state.signer.getAddress();
+    $("account").textContent = "Connected: " + state.account;
+    await requireSepolia();
+    state.contract = await getContract();
+    $("create").disabled = false;
   }
   async function connect() {
     try {
-      if (!window.ethereum) throw new Error("Install MetaMask to connect a wallet.");
-      state.provider ??= new ethers.BrowserProvider(window.ethereum);
-      await state.provider.send("eth_requestAccounts", []);
-      state.signer = await state.provider.getSigner();
-      state.account = await state.signer.getAddress();
-      $("account").textContent = "Connected: " + state.account;
-      await requireSepolia();
-      state.contract = await getContract();
-      $("create").disabled = false;
+      await connectWallet();
       status("Wallet connected to Sepolia.");
       await loadPolls();
     } catch (error) { status(readableError(error), true); }
   }
   async function loadPolls() {
     try {
-      const contract = await getContract();
+      const contract = await getReadContract();
       const count = Number(await contract.nextPollId());
       const polls = $("polls");
       polls.replaceChildren();
@@ -155,7 +175,7 @@
       const wrapper = document.createElement("div");
       const button = document.createElement("button");
       button.textContent = option + " (" + counts[index].toString() + " votes)";
-      button.disabled = closed || expired || !state.signer;
+      button.disabled = closed || expired;
       button.onclick = () => castVote(id, index);
       wrapper.className = "option";
       wrapper.appendChild(button);
@@ -176,8 +196,8 @@
   }
   async function castVote(id, option) {
     try {
+      if (!state.signer) await connectWallet();
       const contract = await getContract();
-      if (!state.signer) throw new Error("Connect your wallet before voting.");
       status("Confirm the vote in MetaMask...");
       const tx = await contract.vote(id, option);
       status("Vote sent. Waiting for confirmation...");
@@ -243,10 +263,7 @@
     window.ethereum.on?.("accountsChanged", () => location.reload());
     window.ethereum.on?.("chainChanged", () => location.reload());
   }
-  if (window.ethereum) {
-    state.provider = new ethers.BrowserProvider(window.ethereum);
-    requireSepolia().catch((error) => status(readableError(error), true));
-  }
+  loadPolls();
 </script>
 </body>
 </html>
